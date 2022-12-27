@@ -17,10 +17,33 @@
 
 // A server to receive EchoRequest and send back EchoResponse.
 
+#include <chrono>
 #include <gflags/gflags.h>
 #include <butil/logging.h>
 #include <brpc/server.h>
 #include "echo.pb.h"
+#include <bvar/bvar.h>
+#include <thread>
+#include <bvar/multi_dimension.h>
+#include "metric.h"
+
+namespace metric {
+    bvar::MultiDimension<bvar::Adder<int>> g_request_count("request_countabcd", {"idc", "method", "status"});
+    int process_request(const std::list<std::string>& request_label) {
+        // 获取request_label对应的单维度bvar指针，比如：request_label = {"tc", "get", "200"}
+        bvar::Adder<int>* adder = g_request_count.get_stats(request_label);
+        // 判断指针非空
+        if (!adder) {
+            LOG(ERROR) << "request no bvar"; // adder add up to 6
+            return -1;
+        }
+        // adder只能在g_request_count的生命周期内访问，否则行为未定义，可能会出core
+        // 给adder输入一些值
+        *adder << 1 << 2 <<3;
+        LOG(INFO) << "request adder=" << *adder; // adder add up to 6
+        return 0;
+    }
+} // metric
 
 DEFINE_bool(echo_attachment, true, "Echo attachment as well");
 DEFINE_int32(port, 8000, "TCP Port of this server");
@@ -62,6 +85,8 @@ public:
         // Fill response.
         response->set_message(request->message());
 
+        metric::qps << 1;
+        metric::process_request({"lf","echo","success"});
         // You can compress the response by setting Controller, but be aware
         // that compression may be costly, evaluate before turning on.
         // cntl->set_response_compress_type(brpc::COMPRESS_TYPE_GZIP);
@@ -106,11 +131,11 @@ int main(int argc, char* argv[]) {
     // Start the server.
     brpc::ServerOptions options;
     options.idle_timeout_sec = FLAGS_idle_timeout_s;
+    metric::g_request_count.expose("request_count_other");
     if (server.Start(point, &options) != 0) {
         LOG(ERROR) << "Fail to start EchoServer";
         return -1;
     }
-
     // Wait until Ctrl-C is pressed, then Stop() and Join() the server.
     server.RunUntilAskedToQuit();
     return 0;
